@@ -21,8 +21,8 @@ from .owl_predictor import OwlPredictor
 if __name__ == "__main__":
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("output_path", type=str)
-    parser.add_argument("--model_name", type=str, default="google/owlvit-base-patch32")
+    parser.add_argument("--output_path", type=str, default='../../../models/nanoowl/')
+    parser.add_argument("--model_name", type=str, default="google/owlv2-base-patch16")
     parser.add_argument("--fp16_mode", type=bool, default=True)
     parser.add_argument("--onnx_opset", type=int, default=16)
     parser.add_argument("--align_rois", type=bool, default=True)
@@ -34,7 +34,7 @@ if __name__ == "__main__":
     )
 
     predictor.build_image_encoder_engine(
-        args.output_path,
+        args.output_path + args.model_name.replace("/", "_")+'.engine',
         fp16_mode=args.fp16_mode,
         onnx_opset=args.onnx_opset
     )

@@ -23,6 +23,7 @@ import os
 from torchvision.ops import roi_align
 from transformers.models.owlv2.modeling_owlv2 import Owlv2ForObjectDetection
 from transformers.models.owlv2.processing_owlv2 import Owlv2Processor
+from transformers.models.owlvit.image_processing_owlvit import box_iou
 
 from transformers.models.owlvit.modeling_owlvit import OwlViTForObjectDetection
 from transformers.models.owlvit.processing_owlvit import OwlViTProcessor
@@ -57,7 +58,9 @@ def _owl_get_image_size(hf_name: str):
         "google/owlvit-base-patch32": 768,
         "google/owlvit-base-patch16": 768,
         "google/owlvit-large-patch14": 840,
+        "google/owlv2-base-patch16": 960,
         "google/owlv2-base-patch16-ensemble": 960,
+        "google/owlv2-base-patch16-finetuned": 960,
         "google/owlv2-large-patch14-ensemble": 1008,
     }
 
@@ -69,7 +72,9 @@ def _owl_get_patch_size(hf_name: str):
         "google/owlvit-base-patch32": 32,
         "google/owlvit-base-patch16": 16,
         "google/owlvit-large-patch14": 14,
+        "google/owlv2-base-patch16": 16,
         "google/owlv2-base-patch16-ensemble": 16,
+        "google/owlv2-base-patch16-finetuned": 16,
         "google/owlv2-large-patch14-ensemble": 14,
     }
 
@@ -154,6 +159,7 @@ class OwlPredictor(torch.nn.Module):
                  image_encoder_engine_max_batch_size: int = 1,
                  image_preprocessor: Optional[ImagePreprocessor] = None,
                  align_rois=True,
+                 no_roi_align: bool = False,
                  ):
 
         super().__init__()
@@ -161,6 +167,7 @@ class OwlPredictor(torch.nn.Module):
         self.align_rois = align_rois
         self.image_size = _owl_get_image_size(model_name)
         self.device = device
+        self.no_roi_align = no_roi_align
 
         model_type = model_name.split("/")[1].split('-')[0]
         if model_type == 'owlv2':
@@ -305,6 +312,8 @@ class OwlPredictor(torch.nn.Module):
                image_output: OwlEncodeImageOutput,
                text_output: OwlEncodeTextOutput,
                threshold: Union[int, float, List[Union[int, float]]] = 0.1,
+               nms_threshold: int = 1.0,
+               class_based_nms: bool = True
                ) -> OwlDecodeOutput:
 
         if isinstance(threshold, (int, float)):
@@ -337,11 +346,46 @@ class OwlPredictor(torch.nn.Module):
         input_indices = torch.arange(0, num_input_images, dtype=labels.dtype, device=labels.device)
         input_indices = input_indices[:, None].repeat(1, self.num_patches)
 
+        # mask predictions with low score
+        labels = labels[mask]
+        scores = scores[mask]
+        boxes = image_output.pred_boxes[mask]
+        input_indices = input_indices[mask]
+
+        # apply non-maximum suppression
+        if nms_threshold < 1.0 and len(labels) > 0:
+            # labels, scores, boxes, input_indices = multiclass_nms(labels, scores, boxes, input_indices, nms_threshold)
+            filtered_labels, filtered_scores, filtered_boxes, filtered_input_indices = [], [], [], []
+            for idx in range(num_input_images):  # batch
+                this_mask = input_indices == idx
+                this_labels, this_scores, this_boxes, this_inpu_indices = (
+                    labels[this_mask], scores[this_mask], boxes[this_mask], input_indices[this_mask]
+                )
+                for i in torch.argsort(-this_scores):
+                    if this_scores[i] < 0.001:
+                        continue
+
+                    ious = box_iou(this_boxes[i, :].unsqueeze(0), this_boxes)[0][0]
+                    ious[i] = -1.0  # Mask self-IoU.
+                    if not class_based_nms:
+                        this_scores[ious > nms_threshold] = 0.0
+                    else:
+                        this_scores[(this_labels == this_labels[i]) & (ious > nms_threshold)] = 0.0
+                this_nms_mask = this_scores > 0.001
+                filtered_labels.append(this_labels[this_nms_mask])
+                filtered_scores.append(this_scores[this_nms_mask])
+                filtered_boxes.append(this_boxes[this_nms_mask])
+                filtered_input_indices.append(this_inpu_indices[this_nms_mask])
+            labels = torch.cat(filtered_labels, dim=0)
+            scores = torch.cat(filtered_scores, dim=0)
+            boxes = torch.cat(filtered_boxes, dim=0)
+            input_indices = torch.cat(filtered_input_indices, dim=0)
+
         return OwlDecodeOutput(
-            labels=labels[mask],
-            scores=scores[mask],
-            boxes=image_output.pred_boxes[mask],
-            input_indices=input_indices[mask]
+            labels=labels,
+            scores=scores,
+            boxes=boxes,
+            input_indices=input_indices
         )
 
     @staticmethod
@@ -484,21 +528,117 @@ class OwlPredictor(torch.nn.Module):
         return self.load_image_encoder_engine(engine_path, max_batch_size)
 
     def predict(self,
-                image: PIL.Image,
+                image: Union[PIL.Image.Image, np.ndarray],
                 text: List[str],
                 text_encodings: Optional[OwlEncodeTextOutput],
                 threshold: Union[int, float, List[Union[int, float]]] = 0.1,
+                nms_threshold: int = 1.0,
+                class_based_nms: bool = True,
                 pad_square: bool = True,
 
                 ) -> OwlDecodeOutput:
 
-        image_tensor = self.image_preprocessor.preprocess_pil_image(image)
+        if isinstance(image, PIL.Image.Image):
+            image_width, image_height = image.size
+            image_tensor = self.image_preprocessor.preprocess_pil_image(image)
+        elif isinstance(image, np.ndarray):
+            assert image.dtype == np.uint8
+            image_height, image_width = image.shape[-2:]
+            image_tensor = self.image_preprocessor.preprocess_numpy_array(image)
+        else:
+            raise ValueError("image must be PIL.Image.Image or np.ndarray")
 
         if text_encodings is None:
             text_encodings = self.encode_text(text)
 
-        rois = torch.tensor([[0, 0, image.width, image.height]], dtype=image_tensor.dtype, device=image_tensor.device)
+        if not self.no_roi_align:
+            rois = torch.tensor([[0, 0, image_width, image_height]], dtype=image_tensor.dtype,
+                                device=image_tensor.device)
+            image_encodings = self.encode_rois(image_tensor, rois, pad_square=pad_square)
+        else:
+            resized_image_h, resized_image_w = image_tensor.shape[-2:]
+            image_encodings = self.encode_image(image_tensor)
+            pred_boxes = image_encodings.pred_boxes
+            if not self.is_v2:
+                pred_boxes = pred_boxes * torch.tensor(
+                    [[[image_width, image_height, image_width, image_height]]],
+                    dtype=pred_boxes.dtype, device=pred_boxes.device
+                )
+            else:
+                pred_boxes = pred_boxes * torch.tensor(
+                    [[[resized_image_w, resized_image_h,
+                       resized_image_w, resized_image_h]]],
+                    dtype=pred_boxes.dtype, device=pred_boxes.device
+                )
+                if (image_width >= resized_image_w) or (image_height >= resized_image_h):
+                    orig_to_resize_factor = max(image_height / resized_image_h, image_width / resized_image_w)
+                    pred_boxes = pred_boxes * torch.ones(
+                        [1, 1, 4], dtype=pred_boxes.dtype, device=pred_boxes.device
+                    ) * orig_to_resize_factor
+            image_encodings.pred_boxes = pred_boxes
 
-        image_encodings = self.encode_rois(image_tensor, rois, pad_square=pad_square)
+        return self.decode(image_encodings, text_encodings, threshold, nms_threshold, class_based_nms)
 
-        return self.decode(image_encodings, text_encodings, threshold)
+
+def multiclass_nms(labels, scores, boxes, input_indices, nms_threshold):
+    filtered_labels = []
+    filtered_scores = []
+    filtered_boxes = []
+    filtered_input_indices = []
+
+    # split dataset into clasees
+    unique_classes = torch.unique(labels)
+    for label in unique_classes:
+        mask = labels == label
+
+        # mask predictions with low score
+        tmp_labels = labels[mask]
+        tmp_scores = scores[mask]
+        tmp_boxes = boxes[mask]
+        tmp_input_indices = input_indices[mask]
+
+        kepts, new_boxes = nms(tmp_boxes, tmp_scores, nms_threshold)
+
+        filtered_labels.append(tmp_labels[kepts])
+        filtered_scores.append(tmp_scores[kepts])
+        filtered_boxes.append(new_boxes[kepts])
+        filtered_input_indices.append(tmp_input_indices[kepts])
+
+    labels = torch.cat(filtered_labels, dim=0)
+    scores = torch.cat(filtered_scores, dim=0)
+    boxes = torch.cat(filtered_boxes, dim=0)
+    input_indices = torch.cat(filtered_input_indices, dim=0)
+
+    return labels, scores, boxes, input_indices
+
+
+# NMS implementation in Python and Numpy
+def nms(boxes, scores, iou_threshold):
+    keep = []
+    order = scores.argsort(descending=True)
+
+    while order.numel() > 0:
+        i = order[0]
+        keep.append(i)
+
+        if order.numel() == 1:
+            break
+
+        xx1 = torch.max(boxes[i, 0], boxes[order[1:], 0])
+        yy1 = torch.max(boxes[i, 1], boxes[order[1:], 1])
+        xx2 = torch.min(boxes[i, 2], boxes[order[1:], 2])
+        yy2 = torch.min(boxes[i, 3], boxes[order[1:], 3])
+
+        w = torch.max(torch.tensor(0.0), xx2 - xx1)
+        h = torch.max(torch.tensor(0.0), yy2 - yy1)
+
+        iou = (w * h) / (
+                (boxes[i, 2] - boxes[i, 0]) * (boxes[i, 3] - boxes[i, 1]) +
+                ((boxes[order[1:], 2] - boxes[order[1:], 0]) * (boxes[order[1:], 3] - boxes[order[1:], 1])) -
+                (w * h)
+        )
+
+        mask = iou >= iou_threshold
+        order = order[1:][mask]
+
+    return torch.tensor(keep), boxes
