@@ -51,7 +51,7 @@ def _owl_center_to_corners_format_torch(bboxes_center):
     )
     return bbox_corners
 
-
+# Todo: update this values to be extracted from models/owlvit/owlv2-patch*****/config.json
 def _owl_get_image_size(hf_name: str):
     image_sizes = {
         "google/owlvit-base-patch32": 768,
