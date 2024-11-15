@@ -51,13 +51,15 @@ def _owl_center_to_corners_format_torch(bboxes_center):
     )
     return bbox_corners
 
-
+# Todo: update this values to be extracted from models/owlvit/owlv2-patch*****/config.json vision_config.image_size
 def _owl_get_image_size(hf_name: str):
     image_sizes = {
         "google/owlvit-base-patch32": 768,
         "google/owlvit-base-patch16": 768,
         "google/owlvit-large-patch14": 840,
+        "google/owlv2-base-patch16": 960,
         "google/owlv2-base-patch16-ensemble": 960,
+        "google/owlv2-base-patch16-finetuned": 960,
         "google/owlv2-large-patch14-ensemble": 1008,
     }
 
@@ -69,7 +71,9 @@ def _owl_get_patch_size(hf_name: str):
         "google/owlvit-base-patch32": 32,
         "google/owlvit-base-patch16": 16,
         "google/owlvit-large-patch14": 14,
+        "google/owlv2-base-patch16": 16,
         "google/owlv2-base-patch16-ensemble": 16,
+        "google/owlv2-base-patch16-finetuned": 16,
         "google/owlv2-large-patch14-ensemble": 14,
     }
 

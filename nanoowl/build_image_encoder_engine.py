@@ -17,24 +17,23 @@
 import argparse
 from .owl_predictor import OwlPredictor
 
-
 if __name__ == "__main__":
-
     parser = argparse.ArgumentParser()
-    parser.add_argument("output_path", type=str)
-    parser.add_argument("--model_name", type=str, default="google/owlvit-base-patch32")
+    parser.add_argument("--output_path", type=str)
+    parser.add_argument("--model_name", type=str, default="google/owlv2-base-patch16")
+    parser.add_argument("--engine_name", type=str, default="model.engine")
     parser.add_argument("--fp16_mode", type=bool, default=True)
     parser.add_argument("--onnx_opset", type=int, default=16)
     parser.add_argument("--align_rois", type=bool, default=True)
     args = parser.parse_args()
-    
+
     predictor = OwlPredictor(
         model_name=args.model_name,
-        align_rois =args.align_rois,
+        align_rois=args.align_rois,
     )
 
     predictor.build_image_encoder_engine(
-        args.output_path,
+        args.output_path + args.engine_name,
         fp16_mode=args.fp16_mode,
         onnx_opset=args.onnx_opset
     )
