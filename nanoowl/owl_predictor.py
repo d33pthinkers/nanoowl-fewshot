@@ -57,7 +57,9 @@ def _owl_get_image_size(hf_name: str):
         "google/owlvit-base-patch32": 768,
         "google/owlvit-base-patch16": 768,
         "google/owlvit-large-patch14": 840,
+        "google/owlv2-base-patch16": 960,
         "google/owlv2-base-patch16-ensemble": 960,
+        "google/owlv2-base-patch16-finetuned": 960,
         "google/owlv2-large-patch14-ensemble": 1008,
     }
 
@@ -69,7 +71,9 @@ def _owl_get_patch_size(hf_name: str):
         "google/owlvit-base-patch32": 32,
         "google/owlvit-base-patch16": 16,
         "google/owlvit-large-patch14": 14,
+        "google/owlv2-base-patch16": 16,
         "google/owlv2-base-patch16-ensemble": 16,
+        "google/owlv2-base-patch16-finetuned": 16,
         "google/owlv2-large-patch14-ensemble": 14,
     }
 
